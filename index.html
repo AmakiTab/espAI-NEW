@@ -1,53 +1,126 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="utf-8">
-    <title>Browser inference demo</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Capstone AI: Vision System</title>
+    
+    <script src="edge-impulse-standalone.js"></script>
 
     <style>
-        #features {
-            width: 50%;
-            font-size: 18px;
-        }
-
-        #results {
-            font-family: monospace;
-            white-space: pre;
-        }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; background: #121212; color: white; margin: 0; padding: 20px; }
+        .card { background: #1e1e1e; padding: 25px; border-radius: 15px; display: inline-block; border: 1px solid #333; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        #container { position: relative; display: none; margin-top: 20px; }
+        img { width: 100%; max-width: 480px; border-radius: 10px; border: 3px solid #00ff88; background: #000; }
+        .status { margin: 15px; color: #00ff88; font-weight: bold; font-size: 1.1em; }
+        .result-box { background: #252525; padding: 15px; margin-top: 15px; border-radius: 10px; border: 1px solid #444; }
+        input { padding: 12px; border-radius: 5px; border: 1px solid #444; background: #000; color: #fff; width: 220px; margin-bottom: 10px; font-size: 16px; text-align: center; }
+        button { padding: 12px 24px; border-radius: 5px; border: none; background: #00ff88; color: #000; font-weight: bold; cursor: pointer; font-size: 16px; transition: 0.3s; }
+        button:hover { background: #00cc6e; }
+        button:disabled { background: #444; color: #888; cursor: not-allowed; }
+        #label { font-size: 2.2em; color: #00ff88; display: block; margin-top: 5px; text-transform: uppercase; }
+        .loader-text { color: #ffa500; margin-bottom: 15px; font-weight: bold; }
     </style>
 </head>
 <body>
-    <h1></h1>
 
-    <p>
-        <input type="text" id="features" placeholder="Paste your features here">
-    </p>
-    <p>
-        <button id="run-inference">Run inference</button>
-    </p>
-    <p id="results"></p>
+    <h1>AI Vision System</h1>
+    
+    <div class="card" id="setup">
+        <div id="loaderStatus" class="loader-text">⏳ Waiting for AI Library...</div>
+        <p style="color: #888; font-size: 0.9em;">Enter ESP32-CAM IP Address:</p>
+        <input type="text" id="ipInput" placeholder="e.g. 192.168.1.100" value="192.168.0.100">
+        <br>
+        <button id="startBtn" onclick="initSystem()" disabled>Initialize System</button>
+    </div>
 
-    <script src="edge-impulse-standalone.js"></script>
-    <script src="run-impulse.js"></script>
+    <div id="container">
+        <img id="cam" crossorigin="anonymous">
+        <div class="status" id="stat">AI Ready</div>
+        <div class="result-box">
+            <span>Detection:</span>
+            <b id="label">---</b>
+            <p>Confidence: <span id="conf">0</span>%</p>
+        </div>
+    </div>
+
     <script>
-        (async () => {
-            var classifier = new EdgeImpulseClassifier();
-            await classifier.init();
+        const stat = document.getElementById('stat');
+        const startBtn = document.getElementById('startBtn');
+        const loaderStatus = document.getElementById('loaderStatus');
+        let classifier;
 
-            let project = classifier.getProjectInfo();
-            document.querySelector('h1').textContent = project.owner + ' / ' + project.name + ' (version ' + project.deploy_version + ')';
+        // Verify the library is loaded before allowing the user to click start
+        const checkLib = setInterval(() => {
+            if (typeof EdgeImpulseClassifier !== 'undefined') {
+                loaderStatus.innerText = "✅ AI Library Ready";
+                loaderStatus.style.color = "#00ff88";
+                startBtn.disabled = false;
+                clearInterval(checkLib);
+            }
+        }, 500);
 
-            document.querySelector('#run-inference').onclick = () => {
+        async function initSystem() {
+            const ip = document.getElementById('ipInput').value;
+            
+            try {
+                // Change UI state
+                document.getElementById('setup').style.display = 'none';
+                document.getElementById('container').style.display = 'inline-block';
+                stat.innerText = "Starting WASM Engine...";
+
+                // Initialize the Edge Impulse Classifier
+                classifier = new EdgeImpulseClassifier();
+                await classifier.init();
+                
+                stat.innerText = "Connecting to ESP32-CAM...";
+                
+                // Set the camera stream source
+                const camImg = document.getElementById('cam');
+                camImg.src = "http://" + ip + "/stream";
+                
+                // Start the inference loop
+                runInference();
+            } catch (err) {
+                stat.innerText = "WASM Error: " + err.message;
+                console.error("Initialization failed:", err);
+                alert("Error initializing AI: " + err.message);
+            }
+        }
+
+        async function runInference() {
+            const img = document.getElementById('cam');
+            
+            // Only classify if the image has data
+            if (img.complete && img.naturalWidth > 0) {
                 try {
-                    let features = document.querySelector('#features').value.split(',').map(x => Number(x.trim()));
-                    let res = classifier.classify(features);
-                    document.querySelector('#results').textContent = JSON.stringify(res, null, 4);
+                    const canvas = document.createElement('canvas');
+                    canvas.width = classifier.size[0];
+                    canvas.height = classifier.size[1];
+                    const ctx = canvas.getContext('2d');
+                    
+                    // Draw current camera frame to canvas
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    
+                    // Get raw image data for AI processing
+                    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+                    const result = await classifier.classify(imgData);
+                    
+                    if (result.results && result.results.length > 0) {
+                        // Find the label with the highest confidence
+                        const top = result.results.reduce((prev, curr) => (prev.value > curr.value) ? prev : curr);
+                        
+                        document.getElementById('label').innerText = top.label;
+                        document.getElementById('conf').innerText = Math.round(top.value * 100);
+                        stat.innerText = "AI System Active";
+                    }
+                } catch (e) {
+                    console.warn("Inference frame skipped");
                 }
-                catch (ex) {
-                    alert('Failed to classify: ' + (ex.message || ex.toString()));
-                }
-            };
-        })();
+            }
+            // Request the next frame
+            requestAnimationFrame(runInference);
+        }
     </script>
 </body>
 </html>
